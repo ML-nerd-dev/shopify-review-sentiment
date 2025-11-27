@@ -1,0 +1,122 @@
+# app.py
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from transformers import pipeline
+import re
+from collections import Counter
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+
+st.set_page_config(page_title="Shopify Review Sentiment", layout="wide", page_icon="shopping_bag")
+
+# Custom CSS
+st.markdown("""
+<style>
+    .big {font-size: 70px !important; font-weight: bold;}
+    .positive {color: #00ff9d;}
+    .negative {color: #ff006e;}
+    .wordcloud {background: #111; padding: 20px; border-radius: 15px;}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("Shopify Review Sentiment Dashboard
+st.markdown("### Turn 10,000+ customer reviews into actionable insights in 30 seconds")
+
+# Sidebar upload
+uploaded = st.sidebar.file_uploader("Upload Reviews CSV", type=["csv"])
+if uploaded:
+    df = pd.read_csv(uploaded)
+else:
+    df = pd.read_csv("data/sample_reviews.csv")
+    st.info("Demo mode — analyzing 1,200+ real-looking Shopify reviews")
+
+# Auto-detect review column
+review_col = st.sidebar.selectbox("Review Text Column", df.columns)
+
+@st.cache_resource
+def load_model():
+    return pipeline("sentiment-analysis", 
+                    model="cardiffnlp/twitter-roberta-base-sentiment-latest",
+                    return_all_scores=True)
+
+classifier = load_model()
+
+with st.spinner("Analyzing every review with AI..."):
+    results = classifier(df[review_col].astype(str).tolist())
+
+# Extract sentiment
+def get_sentiment(scores):
+    labels = ['NEGATIVE', 'NEUTRAL', 'POSITIVE']
+    return labels[scores.index(max(scores))]
+
+df['sentiment'] = [get_sentiment(r) for r in results]
+df['confidence'] = [max(r) for r in results]
+
+# Stats
+total = len(df)
+pos = len(df[df.sentiment == 'POSITIVE'])
+neg = len(df[df.sentiment == 'NEGATIVE'])
+neu = total - pos - neg
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Reviews", f"{total:,}")
+col2.metric("Positive", f"{pos:,}", delta=f"{pos/total*100:.1f}%")
+col3.metric("Neutral", f"{neu:,}")
+col4.metric("", f"{neg:,}", delta=f"-{neg/total*100:.1f}%")
+
+# Charts
+col1, col2 = st.columns(2)
+with_gap="large")
+with col1:
+    fig_pie = px.pie(values=[pos, neu, neg], names=['Positive', 'Neutral', 'Negative'],
+                     color_discrete_sequence=['#00ff9d', '#888', '#ff006e'])
+    fig_pie.update_layout(title="Sentiment Distribution")
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+with col2:
+    df['date'] = pd.to_datetime(df.get('date', pd.Series(pd.date_range('2024-01-01', periods=len(df)))))
+    monthly = df.groupby(df['date'].dt.to_period('M'))['sentiment'].value_counts().unstack().fillna(0)
+    fig_line = px.line(monthly, title="Sentiment Trend Over Time",
+                       color_discrete_map={'POSITIVE': '#00ff9d', 'NEUTRAL': '#888', 'NEGATIVE': '#ff006e'})
+    st.plotly_chart(fig_line, use_container_width=True)
+
+# Word Clouds
+st.subheader("What Customers Actually Say")
+pos_text = " ".join(df[df.sentiment == 'POSITIVE'][review_col].astype(str))
+neg_text = " ".join(df[df.sentiment == 'NEGATIVE'][review_col].astype(str))
+
+col1, col2 = st.columns(2)
+with col1:
+    if pos_text:
+        wc_pos = WordCloud(background_color="#000", colormap="Greens", width=800, height=400).generate(pos_text)
+        fig, ax = plt.subplots(figsize=(10,5))
+        ax.imshow(wc_pos, interpolation='bilinear')
+        ax.axis("off")
+        st.pyplot(fig)
+
+with col2:
+    if neg_text:
+        wc_neg = WordCloud(background_color="#000", colormap="Reds", width=800, height=400).generate(neg_text)
+        fig, ax = plt.subplots(figsize=(10,5))
+        ax.imshow(wc_neg, interpolation='bilinear')
+        ax.axis("off")
+        st.pyplot(fig)
+
+# Top phrases
+st.subheader("Most Common Complaints & Praises")
+neg_words = Counter(" ".join(df[df.sentiment == 'NEGATIVE'][review_col].str.lower()).split()).most_common(15)
+pos_words = Counter(" ".join(df[df.sentiment == 'POSITIVE'][review_col].str.lower()).split()).most_common(15)
+
+col1, col2 = st.columns(2)
+with col1:
+    st.success("Customers Love")
+    for word, count in pos_words:
+        st.write(f"• {word.title()} ({count}x)")
+
+with col2:
+    st.error("Customers Complain About")
+    for word, count in neg_words:
+        st.write(f"• {word.title()} ({count}x)")
+
+st.download_button("Download Full Report (CSV)", df.to_csv(index=False), "review_analysis.csv")
